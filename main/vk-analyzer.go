@@ -2,10 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/ioutil"
-	"logger"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"local/logger"
 
 	"github.com/fatih/color"
 )
@@ -13,6 +20,24 @@ import (
 type command struct {
 	exec        func([]string)
 	description string
+}
+
+type config struct {
+	APIKey string
+}
+
+type permissionResponse struct {
+	Response uint32
+}
+
+func getJSON(url string, target interface{}) error {
+	r, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+
+	return json.NewDecoder(r.Body).Decode(target)
 }
 
 func rjust(initial string, char rune, size int) string {
@@ -23,10 +48,6 @@ func rjust(initial string, char rune, size int) string {
 	}
 
 	return initial
-}
-
-type config struct {
-	APIKey string
 }
 
 func help(args []string) {
@@ -61,12 +82,65 @@ func help(args []string) {
 			descriptions[i],
 		)
 	}
-
-	getAPIKey(args)
 }
 
 func initialize(args []string) {
+	_, err := getAPIKey(args)
 
+	if err == nil {
+		var resp string
+
+		Log.Infoln("Конфигурация уже настроена. ")
+		Log.Info("Вы точно хотите продолжить? (Y\\n): ")
+
+		fmt.Scanln(&resp)
+
+		if r, _ := utf8.DecodeRuneInString(resp); unicode.ToLower(r) == 'n' {
+			return
+		}
+	}
+
+	conf := config{}
+	wrong := true
+
+	for wrong {
+		Log.Info("Введите ключ VK API: ")
+		fmt.Scanln(&conf.APIKey)
+
+		address := defaultURL
+		query := defaultQuery
+
+		query.Set("access_token", conf.APIKey)
+
+		address.Path += "account.getAppPermissions"
+		address.RawQuery = query.Encode()
+
+		resp := permissionResponse{}
+		err := getJSON(address.String(), &resp)
+
+		if err == nil && resp.Response > 0 {
+			wrong = false
+		} else {
+			Log.Errorln("Некорректный ключ!")
+		}
+	}
+
+	b, err := json.Marshal(conf)
+
+	if err != nil {
+		Log.Errorln("Ошибка сериализации JSON!")
+		Log.Errorln("Разработчик офигел - скажите ему об этом.")
+		return
+	}
+
+	err = ioutil.WriteFile("./config.json", b, 0777)
+
+	if err != nil {
+		Log.Errorln("Ошибка записи файла конфигурации!")
+		return
+	}
+
+	Log.Infoln("Конфигурация завершена!")
 }
 
 func getAPIKey(args []string) (string, error) {
@@ -78,26 +152,20 @@ func getAPIKey(args []string) (string, error) {
 		err := json.Unmarshal(data, &conf)
 
 		if err == nil && len(conf.APIKey) > 0 {
-			Log.Infoln(conf.APIKey)
 			return conf.APIKey, nil
 		}
 
-		Log.Errorln("Некорректный файл конфигурации!")
-	} else {
-		Log.Errorln("Нет файла конфигурации!")
+		return "", errors.New("Некорректный файл конфигурации")
 	}
 
-	Log.Errorf(
-		"Выполните команду %s, чтобы настроить конфигурацию.\n",
-		boldCyan.Sprintf("%s init", args[0]),
-	)
-
-	return "", err
+	return "", errors.New("Нет файла конфигурации")
 }
 
 // Log выступает глобальным главным логгером для ошибок и обычного вывода
 var Log *logger.Logger
 var boldRed, boldCyan *color.Color
+var defaultURL = url.URL{}
+var defaultQuery = defaultURL.Query()
 var commands = map[string]command{
 	"help": {
 		func(s []string) {},
@@ -113,6 +181,11 @@ func main() {
 	argsSize := len(os.Args)
 	boldRed = color.New(color.FgRed, color.Bold)
 	boldCyan = color.New(color.FgCyan, color.Bold)
+	defaultURL.Scheme = "https"
+	defaultURL.Host = "api.vk.com"
+	defaultURL.Path = "/method/"
+
+	defaultQuery.Set("v", "5.126")
 
 	Log = logger.New()
 	Log.SetErrorPrefix(boldRed.Sprint("ОШИБКА: "))
