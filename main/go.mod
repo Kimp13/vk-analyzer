@@ -2,9 +2,6 @@ module main
 
 go 1.15
 
-replace local/logger => ../logger
+replace lib => ../lib
 
-require (
-	github.com/fatih/color v1.10.0
-	local/logger v0.0.0-00010101000000-000000000000
-)
+require lib v0.0.0-00010101000000-000000000000
